@@ -1,0 +1,49 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc, clang]
+        os: [ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      CC: ${{ matrix.compiler == 'gcc' && 'gcc' || 'clang' }}
+      CXX: ${{ matrix.compiler == 'gcc' && 'g++' || 'clang++' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Make build (self-check + C smoke)
+        run: |
+          make selfcheck
+          make c-smoke
+
+      - name: CMake + ctest
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+          cmake --build build
+          ctest --test-dir build --output-on-failure
+
+      - name: Portable fallback paths (feature macros disabled)
+        run: |
+          # Simulate a strict-POSIX platform by stripping FTL_HAVE_* macros,
+          # then compile+run the fallback probe suite.
+          rm -rf /tmp/fakeftl && mkdir /tmp/fakeftl && cp -r ftl /tmp/fakeftl/ftl
+          sed -i 's/#define FTL_HAVE_EXECVPE 1//; s/#define FTL_HAVE_TIMEDJOIN_NP 1//' \
+            /tmp/fakeftl/ftl/core/features.hpp
+          $CXX -std=c++17 -Wall -Wextra -Wpedantic -pthread -I/tmp/fakeftl \
+            scripts/portable_fallback_test.cpp -o portable_probe
+          ./portable_probe
+
+  sanitizers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Self-check under ASan+UBSan (default flags)
+        run: |
+          make clean && make selfcheck && make c-smoke

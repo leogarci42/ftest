@@ -1,10 +1,6 @@
 #pragma once
 
-#include <dirent.h>
-#include <unistd.h>
 #include <algorithm>
-#include <cerrno>
-#include <cstring>
 #include <string>
 #include <vector>
 
@@ -12,34 +8,7 @@
 
 namespace ftest {
 
-inline std::vector<int> fd_snapshot()
-{
-        int dir_fd = open("/proc/self/fd", O_RDONLY | O_DIRECTORY);
-        if (dir_fd < 0)
-                return {};
-
-        DIR* dir = fdopendir(dir_fd);
-        if (!dir)
-        {
-                close(dir_fd);
-                return {};
-        }
-
-        std::vector<int> fds;
-        errno = 0;
-        for (dirent* entry = readdir(dir); entry; entry = readdir(dir))
-        {
-                char* end = nullptr;
-                long value = strtol(entry->d_name, &end, 10);
-                if (end && *end == '\0' && value >= 0)
-                        fds.push_back(static_cast<int>(value));
-                errno = 0;
-        }
-        closedir(dir);
-
-        std::sort(fds.begin(), fds.end());
-        return fds;
-}
+using ftl::fd_snapshot;
 
 class FdLeakGuard
 {
@@ -67,7 +36,7 @@ public:
                         for (size_t i = 0; i < leaked.size(); ++i)
                                 list += (i ? ", " : "")
                                         + std::to_string(leaked[i]);
-                        throw TestFailure(label_ + ": " 
+                        throw TestFailure(label_ + ": "
                                           + std::to_string(leaked.size())
                                           + " file descriptor(s) left open: "
                                           + list);
@@ -75,8 +44,8 @@ public:
         }
 
 private:
-        std::string       label_;
-        std::vector<int>  baseline_;
+        std::string      label_;
+        std::vector<int> baseline_;
 };
 
 } // namespace ftest

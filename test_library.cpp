@@ -1,5 +1,6 @@
 #include <unistd.h>
 #include <fcntl.h>
+#include <pthread.h>
 #include <sys/stat.h>
 #include <cstdlib>
 #include <cstring>
@@ -7,7 +8,7 @@
 #include <string>
 #include <vector>
 
-#include "ftest.hpp"
+#include <ftest/ftest.hpp>
 
 namespace {
 
@@ -170,6 +171,140 @@ void test_process_runner_stdin_piping()
                       "stdin data reaches the child process");
 }
 
+void test_subprocess_v2_split_output()
+{
+        RunResult result = Subprocess("/bin/sh")
+                                   .args({"-c", "echo out; echo err >&2"})
+                                   .split_output()
+                                   .run();
+        require_exit(result, 0, "split-output child must succeed");
+        require_equal(result.output, std::string("out\n"),
+                      "stdout goes to output when split");
+        require_equal(result.error_output, std::string("err\n"),
+                      "stderr goes to error_output when split");
+
+        RunResult merged = Subprocess("/bin/sh")
+                                   .args({"-c", "echo out; echo err >&2"})
+                                   .run();
+        require(merged.output.find("out") != std::string::npos
+                        && merged.output.find("err") != std::string::npos,
+                "merged mode combines stdout and stderr");
+}
+
+void test_subprocess_env_control()
+{
+        RunResult inherited = Subprocess("/bin/sh")
+                                      .args({"-c", "echo $FTL_PROBE"})
+                                      .env("FTL_PROBE", "injected")
+                                      .run();
+        require_output_contains(inherited, "injected",
+                                "env override is visible to the child");
+
+        setenv("FTL_PROBE", "parent-value", 1);
+        RunResult replaced = Subprocess("/bin/sh")
+                                     .args({"-c", "echo $HOME$FTL_PROBE"})
+                                     .env("FTL_PROBE", "only-me", true)
+                                     .run();
+        require_output_contains(replaced, "only-me",
+                                "replacing env keeps the override");
+        require_false(replaced.output.find("parent-value")
+                              != std::string::npos,
+                      "replacing env drops parent variables");
+        unsetenv("FTL_PROBE");
+}
+
+void test_subprocess_helpers_and_crash_report()
+{
+        RunResult crash =
+                Subprocess("/bin/sh").args({"-c", "kill -SEGV $$"}).run();
+        require_signaled(crash, SIGSEGV,
+                         "self-SEGV child is reported as a signal death");
+        require(crash.exit_code() == -1,
+                "signaled child has no meaningful exit code");
+}
+
+void test_thread_leak_guard_detects_unjoined_threads()
+{
+        ThreadLeakGuard guard("thread leak probe");
+        bool done = false;
+        pthread_t worker;
+        auto body = +[](void* arg) -> void*
+        {
+                *static_cast<bool*>(arg) = true;
+                return nullptr;
+        };
+        require(pthread_create(&worker, nullptr, body, &done) == 0,
+                "setup: cannot spawn worker");
+        (void)done;
+        bool detected = false;
+        try
+        {
+                guard.require_clean();
+        }
+        catch (const TestFailure& e)
+        {
+                detected = true;
+                std::string message = e.what();
+                require_contains(message, "thread(s) not joined",
+                                 "thread report names the problem");
+        }
+        require(detected, "unjoined thread must be flagged as a leak");
+        pthread_join(worker, nullptr);
+        guard.require_clean();
+}
+
+void* sleeping_worker(void*)
+{
+        sleep(30);
+        return nullptr;
+}
+
+void* noop_worker(void*)
+{
+        return nullptr;
+}
+
+void test_stuck_thread_guard_names_stuck_workers()
+{
+        StuckThreadGuard guard("stuck probe");
+        pthread_t stuck_thread;
+        pthread_t quick_thread;
+        require(pthread_create(&stuck_thread, nullptr, sleeping_worker,
+                               nullptr) == 0,
+                "setup: cannot spawn stuck worker");
+        require(pthread_create(&quick_thread, nullptr, noop_worker, nullptr)
+                        == 0,
+                "setup: cannot spawn quick worker");
+        guard.watch(stuck_thread, "stuck-worker");
+        guard.watch(quick_thread, "quick-worker");
+
+        bool detected = false;
+        try
+        {
+                guard.require_all_finished(std::chrono::milliseconds{300});
+        }
+        catch (const std::exception& e)
+        {
+                detected = true;
+                std::string message = e.what();
+                require_contains(message, "stuck-worker",
+                                 "report names the stuck thread");
+        }
+        require(detected, "a sleeping worker must be flagged as stuck");
+
+        pthread_detach(stuck_thread);
+}
+
+void test_stuck_thread_guard_passes_when_threads_finish()
+{
+        StuckThreadGuard guard("finishing probe");
+        pthread_t worker;
+        require(pthread_create(&worker, nullptr, noop_worker, nullptr) == 0,
+                "setup: cannot spawn worker");
+        guard.watch(worker, "worker");
+        guard.require_all_finished(std::chrono::milliseconds{2000});
+}
+
 } // namespace
 
 int main()
@@ -208,12 +343,30 @@ int main()
         process.add("stdin piping reaches the child",
                     test_process_runner_stdin_piping);
 
+        Suite subprocess_v2("subprocess v2");
+        subprocess_v2.add("split_output separates stdout from stderr",
+                         test_subprocess_v2_split_output);
+        subprocess_v2.add("environment overrides are inherited or replacing",
+                         test_subprocess_env_control);
+        subprocess_v2.add("signal death is reported through the helpers",
+                         test_subprocess_helpers_and_crash_report);
+
+        Suite threads("thread tracking");
+        threads.add("unjoined thread is detected as a leak",
+                    test_thread_leak_guard_detects_unjoined_threads);
+        threads.add("stuck worker is named by StuckThreadGuard",
+                    test_stuck_thread_guard_names_stuck_workers);
+        threads.add("finished workers pass StuckThreadGuard",
+                    test_stuck_thread_guard_passes_when_threads_finish);
+
         Runner runner;
         runner.add(std::move(assertions));
         runner.add(std::move(fds));
         runner.add(std::move(heap));
         runner.add(std::move(tools));
         runner.add(std::move(process));
+        runner.add(std::move(subprocess_v2));
+        runner.add(std::move(threads));
 
         if (alloc_tracking_available())
                 std::cout << YELLOW << "(note: glibc mallinfo2 allocation "

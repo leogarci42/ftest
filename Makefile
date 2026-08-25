@@ -1,18 +1,22 @@
 CXX = c++
+CC  = cc
 ROOT = ..
-CXXFLAGS = -std=c++17 -Wall -Wextra -Wpedantic -I$(ROOT)/includes -I.
+CXXFLAGS = -std=c++17 -Wall -Wextra -Wpedantic -pthread -I. -I$(ROOT)/includes -Iftest -Iftl
+CFLAGS   = -std=c11 -Wall -Wextra -Wpedantic -Iftl
 LDFLAGS =
-LDLIBS = -lreadline
+LDLIBS = -lreadline -lpthread
 DEBUG_LDFLAGS = -fsanitize=address,undefined
 
 LIB_TEST = test_library
 UNIT_TEST = test_unit
 CLI_TEST = test_cli
+SMOKE_TEST = c_smoke_test
 PROJECT_OBJS = $(shell find $(ROOT)/obj -name '*.o' ! -name 'main.o' 2>/dev/null)
 
-HEADERS = ftest.hpp framework.hpp capture.hpp files.hpp fdtrack.hpp alloc.hpp process.hpp
+HEADERS = $(shell find ftl ftest -name '*.hpp' -o -name '*.h' | sort)
+FT_HEADERS = $(shell find ftest -name '*.hpp' | sort)
 
-all: selfcheck
+all: selfcheck c-smoke
 
 selfcheck: $(LIB_TEST)
 	@printf "running ftest library self-check...\n"
@@ -33,7 +37,25 @@ $(UNIT_TEST): test_unit.cpp $(HEADERS) $(PROJECT_OBJS)
 $(CLI_TEST): test_cli.cpp $(HEADERS)
 	$(CXX) $(CXXFLAGS) test_cli.cpp -o $@ $(DEBUG_LDFLAGS)
 
-clean:
-	@rm -f $(LIB_TEST) $(UNIT_TEST) $(CLI_TEST)
+c-smoke: $(SMOKE_TEST)
+	@printf "running pure-C API smoke test...\n"
+	@./$(SMOKE_TEST)
 
-.PHONY: all selfcheck project clean
+$(SMOKE_TEST): c_smoke.c ftl/ftl.h
+	$(CC) $(CFLAGS) c_smoke.c -o $@
+
+# Strict-POSIX fallback probe: strips FTL_HAVE_* macros from a scratch copy
+# of ftl/, then runs scripts/portable_fallback_test.cpp against it.
+portable:
+	@rm -rf /tmp/fakeftl && mkdir -p /tmp/fakeftl && cp -r ftl /tmp/fakeftl/ftl
+	@sed -i 's/#define FTL_HAVE_EXECVPE 1//; s/#define FTL_HAVE_TIMEDJOIN_NP 1//' \
+		/tmp/fakeftl/ftl/core/features.hpp
+	@printf "running strict-POSIX fallback probe...\n"
+	@$(CXX) $(filter-out -I., $(CXXFLAGS)) -I/tmp/fakeftl \
+		scripts/portable_fallback_test.cpp -o /tmp/fakeftl/probe
+	@/tmp/fakeftl/probe
+
+clean:
+	@rm -f $(LIB_TEST) $(UNIT_TEST) $(CLI_TEST) $(SMOKE_TEST)
+
+.PHONY: all selfcheck project c-smoke portable clean

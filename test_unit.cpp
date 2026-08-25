@@ -9,7 +9,7 @@ extern "C" {
 #include "commands.h"
 }
 
-#include "ftest.hpp"
+#include <ftest/ftest.hpp>
 
 namespace {
 

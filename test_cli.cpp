@@ -4,7 +4,7 @@
 #include <utility>
 #include <vector>
 
-#include "ftest.hpp"
+#include <ftest/ftest.hpp>
 
 namespace {
 

@@ -1,45 +1,15 @@
 #pragma once
 
+#include <ftw.h>
 #include <unistd.h>
-#include <fcntl.h>
 #include <cerrno>
-#include <cstring>
 #include <cstdio>
-#include <sys/stat.h>
-#include <cstdlib>
 #include <fstream>
-#include <string>
 #include <stdexcept>
+#include <string>
+#include <vector>
 
-#include "framework.hpp"
-
-namespace ftest {
-
-class FileDescriptor
-{
-public:
-        explicit FileDescriptor(const std::string& path, int flags = O_RDONLY)
-                : fd_(open(path.c_str(), flags))
-        {
-                if (fd_ < 0)
-                        throw std::runtime_error("cannot open " + path + ": "
-                                                 + std::string(strerror(errno)));
-        }
-
-        ~FileDescriptor()
-        {
-                if (fd_ >= 0)
-                        close(fd_);
-        }
-
-        FileDescriptor(const FileDescriptor&) = delete;
-        FileDescriptor& operator=(const FileDescriptor&) = delete;
-
-        int get() const { return fd_; }
-
-private:
-        int fd_;
-};
+namespace ftl {
 
 class TempFile
 {
@@ -48,8 +18,9 @@ public:
                 : path_(path)
         {
                 std::ofstream out(path_, std::ios::binary | std::ios::trunc);
-                require(static_cast<bool>(out),
-                        "cannot create temp file " + path_);
+                if (!out)
+                        throw std::runtime_error("cannot create temp file "
+                                                 + path_);
                 out << content;
         }
 
@@ -71,7 +42,7 @@ private:
 class TempDir
 {
 public:
-        TempDir(const std::string& prefix)
+        explicit TempDir(const std::string& prefix)
         {
                 std::string tmpl = "/tmp/" + prefix + "_XXXXXX";
                 std::vector<char> buf(tmpl.begin(), tmpl.end());
@@ -82,7 +53,7 @@ public:
                 path_ = result;
         }
 
-        ~TempDir() { std::remove(path_.c_str()); }
+        ~TempDir() { remove_tree(path_); }
 
         TempDir(const TempDir&) = delete;
         TempDir& operator=(const TempDir&) = delete;
@@ -90,7 +61,18 @@ public:
         const std::string& path() const { return path_; }
 
 private:
+        static int remove_entry(const char* path, const struct stat*, int,
+                                struct FTW*)
+        {
+                return remove(path) == 0 ? 0 : -1;
+        }
+
+        static void remove_tree(const std::string& path)
+        {
+                nftw(path.c_str(), remove_entry, 16, FTW_DEPTH | FTW_PHYS);
+        }
+
         std::string path_;
 };
 
-} // namespace ftest
+} // namespace ftl

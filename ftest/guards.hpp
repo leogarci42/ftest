@@ -1,7 +1,9 @@
 #pragma once
 
 #include <pthread.h>
+#include <chrono>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -28,13 +30,29 @@ public:
 
         void require_clean(size_t expected_new_threads = 0) const
         {
-                size_t now = ftl::thread_snapshot().count;
-                if (now > baseline_ + expected_new_threads)
-                        throw TestFailure(
-                                label_ + ": " + std::to_string(now - baseline_)
-                                + " thread(s) not joined (baseline "
-                                + std::to_string(baseline_) + ", now "
-                                + std::to_string(now) + ")");
+                // A just-joined pthread can linger in /proc/self/task for a
+                // few moments after pthread_join() returns: the kernel wakes
+                // the joiner (CLONE_CHILD_CLEARTID) early in do_exit(), but
+                // the task entry is unhashed from /proc only later. Poll
+                // briefly so a fully-reaped thread is not misreported; a
+                // genuinely unjoined thread stays visible and still fails.
+                const auto deadline = std::chrono::steady_clock::now()
+                        + std::chrono::milliseconds{500};
+                for (;;)
+                {
+                        size_t now = ftl::thread_snapshot().count;
+                        if (now <= baseline_ + expected_new_threads)
+                                return;
+                        if (std::chrono::steady_clock::now() >= deadline)
+                                throw TestFailure(
+                                        label_ + ": "
+                                        + std::to_string(now - baseline_)
+                                        + " thread(s) not joined (baseline "
+                                        + std::to_string(baseline_) + ", now "
+                                        + std::to_string(now) + ")");
+                        std::this_thread::sleep_for(
+                                std::chrono::milliseconds{10});
+                }
         }
 
 private:

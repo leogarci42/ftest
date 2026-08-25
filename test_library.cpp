@@ -4,8 +4,10 @@
 #include <sys/stat.h>
 #include <cstdlib>
 #include <cstring>
+#include <atomic>
 #include <chrono>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <ftest/ftest.hpp>
@@ -226,16 +228,22 @@ void test_subprocess_helpers_and_crash_report()
 void test_thread_leak_guard_detects_unjoined_threads()
 {
         ThreadLeakGuard guard("thread leak probe");
-        bool done = false;
         pthread_t worker;
+        // The worker parks until released: a pthread that exits before the
+        // guard samples /proc/self/task can already be reaped by the kernel
+        // (non-leader threads never linger as zombies), so the probe must
+        // hold it live-and-unjoined for the leak to be observable.
+        std::atomic<bool> release_worker{false};
         auto body = +[](void* arg) -> void*
         {
-                *static_cast<bool*>(arg) = true;
+                auto* flag = static_cast<std::atomic<bool>*>(arg);
+                while (!flag->load(std::memory_order_acquire))
+                        std::this_thread::sleep_for(
+                                std::chrono::milliseconds{1});
                 return nullptr;
         };
-        require(pthread_create(&worker, nullptr, body, &done) == 0,
+        require(pthread_create(&worker, nullptr, body, &release_worker) == 0,
                 "setup: cannot spawn worker");
-        (void)done;
         bool detected = false;
         try
         {
@@ -249,6 +257,7 @@ void test_thread_leak_guard_detects_unjoined_threads()
                                  "thread report names the problem");
         }
         require(detected, "unjoined thread must be flagged as a leak");
+        release_worker.store(true, std::memory_order_release);
         pthread_join(worker, nullptr);
         guard.require_clean();
 }

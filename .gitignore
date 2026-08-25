@@ -1,0 +1,6 @@
+test_library
+test_unit
+test_cli
+c_smoke_test
+portable_probe
+build/

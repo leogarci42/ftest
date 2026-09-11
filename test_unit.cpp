@@ -40,7 +40,7 @@ struct HashRun
 HashRun hash_fd_checked(HashFn fn, int fd, const std::string& label)
 {
         std::string owned_path = label.empty() ? "(fd)" : label;
-        OutputCapture capture;
+        OutputCapture capture(STDOUT_FILENO, stdout);
         int rc = fn(Q_FLAGS, fd, owned_path.data());
         return {rc, capture.content()};
 }

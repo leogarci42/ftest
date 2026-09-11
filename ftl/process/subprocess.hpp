@@ -181,8 +181,10 @@ public:
                         throw_errno("fork");
 
                 if (pid == 0)
-                        child_exec(in_pipe.read_fd.get(),
-                                   out_pipe.write_fd.get(), err_write.get());
+                        child_exec(in_pipe.read_fd.get(), in_pipe.write_fd.get(),
+                                   out_pipe.read_fd.get(),
+                                   out_pipe.write_fd.get(), err_read.get(),
+                                   err_write.get());
 
                 in_pipe.read_fd.reset();
                 out_pipe.write_fd.reset();
@@ -198,7 +200,8 @@ public:
         }
 
 private:
-        [[noreturn]] void child_exec(int in_fd, int out_fd,
+        [[noreturn]] void child_exec(int in_fd, int in_write_fd, int out_read_fd,
+                                     int out_fd, int err_read_fd,
                                      int err_fd) const
         {
                 if (rlimit_nofile_ > 0)
@@ -213,6 +216,21 @@ private:
                         dup2(err_fd, STDERR_FILENO);
                 else
                         dup2(out_fd, STDERR_FILENO);
+
+                // Drop the pipe ends we inherited through fork but never
+                // dup2'd. In particular the stdin write end must not survive
+                // here: while it stays open the child never sees EOF on
+                // stdin and hangs waiting for input that will not come.
+                auto close_unused = [](int fd) {
+                        if (fd > STDERR_FILENO)
+                                close(fd);
+                };
+                close_unused(in_fd);
+                close_unused(in_write_fd);
+                close_unused(out_read_fd);
+                close_unused(out_fd);
+                close_unused(err_read_fd);
+                close_unused(err_fd);
 
                 std::vector<char*> argv;
                 argv.push_back(const_cast<char*>(program_.c_str()));

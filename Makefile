@@ -58,4 +58,6 @@ portable:
 clean:
 	@rm -f $(LIB_TEST) $(UNIT_TEST) $(CLI_TEST) $(SMOKE_TEST)
 
-.PHONY: all selfcheck project c-smoke portable clean
+test: selfcheck c-smoke
+
+.PHONY: all test selfcheck project c-smoke portable clean
